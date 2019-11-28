@@ -2,56 +2,53 @@ import re
 import vk_api
 import json
 from pprint import pprint
-from datetime import date, timedelta
+from datetime import date
 import random
 import time
 import pandas as pd
 from pymongo import MongoClient
 
-
-from pymongo import MongoClient
+from Vkinder_service import JSONEncoder, captcha_handler
 
 client = MongoClient()
 vkinder_db = client['VKinder_db']
 output_data_collection = vkinder_db['output_data']
 
 
-class Vkinder:
 
+class Vkinder:
     def __init__(self, u_login, u_password):
         if not u_login:
             self.u_login = input('Ваш номер телефона Вконтакте: ')
-        else:
-            self.u_login = u_login
+        self.u_login = u_login
 
         if not u_password:
             self.u_password = input('Ваш пароль Вконтакте: ')
-        else:
-            self.u_password = u_password
+        self.u_password = u_password
 
-        self.vk_session = vk_api.VkApi(self.u_login, self.u_password)
+        self.vk_session = vk_api.VkApi(self.u_login, self.u_password,
+                                       scope='friend, photo, offline, groups',
+                                       api_version='5.103', app_id=7219768,
+                                       captcha_handler=captcha_handler)
+
         self.vk_session.auth()
+
         self.vk = self.vk_session.get_api()
         self.user = self.vk.users.get()
         self.id = self.user[0]['id']
+        self.vk_tools = vk_api.VkTools(self.vk_session)
+        print(f'\nПривет, {self.user[0]["first_name"]}')
 
     def get_subject_info(self, subject_id=None):
         if not subject_id:
             subject_id = self.id
 
-        self.info_params = {
-            'user_ids': subject_id,
-            'fields': r"bdate, sex, city, country, " \
-                      r"activities, interests, " \
-                      r"music, movies, tv, books, games, screen_name"
-        }
+        self.info_fields = """bdate, sex, city, country, activities, 
+        interests, music, movies, tv, books, games, screen_name"""
 
         self.subject_id_info = self.vk.users.get(user_ids=subject_id,
                                                  fields=
-                                                 self.info_params[
-                                                     'fields'])
-
-        print(f'Привет, {self.subject_id_info[0]["first_name"]}')
+                                                 self.info_fields)
 
         self.subject_id_int = self.subject_id_info[0]['id']
         self.subject_full_name = f"{self.subject_id_info[0]['first_name']} " \
@@ -88,7 +85,7 @@ class Vkinder:
 
         if self.subject_id_info[0].get('country'):
             self.subject_country = \
-            self.subject_id_info[0]['country']['title']
+                self.subject_id_info[0]['country']['title']
         else:
             self.subject_country = input('Ваша страна проживания: ')
 
@@ -160,10 +157,13 @@ class Vkinder:
             'interests': self.subject_interests
         }
 
+        print('subj_info_dict')
+        print(self.subj_info_dict)
+        print('\n')
+
         return self.subj_info_dict
 
-
-    def make_search_request(self, subject_id=None, db_name=vkinder_db.subject_info_collection):
+    def make_search_request(self, subject_id=None):
 
         # TODO: в рамках этого метода - захват большого количества данных
         #  c первоначальной выборкой (возраст, пол) и запись в коллекцию бд
@@ -178,30 +178,28 @@ class Vkinder:
             self.target_sex = 1
         self.target_age = [self.subj_info_dict['age'] - 2,
                            self.subj_info_dict['age'] + 2]
-        print('targets: ', self.target_sex, self.target_age)
+        self.search_fields = "photo_id, verified, sex, bdate, city, " \
+                             "country, photo_max_orig, has_mobile, " \
+                             "relation, interests, music, movies, " \
+                             "books, games"
+        time.sleep(0.5)
         if self.subj_info_dict['city_id']:
-            self.search_req = self.vk.users.search(count=100,
-                                                   fields="""
-                            photo_id, verified, sex, bdate, city, 
-                            country, photo_max_orig, has_mobile, 
-                            relation, interests, music, movies, 
-                            books, games""",
-                            city=self.subj_info_dict['city_id'],
-                            sex=self.target_sex, status=6,
-                            offset=random.randint(0, 900),
-                            age_from=self.target_age[0],
-                            age_to=self.target_age[1], has_photo=1)
+            self.search_req = (self.vk.users.search
+                               (count=100, fields=self.search_fields,
+                                city=self.subj_info_dict['city_id'],
+                                sex=self.target_sex, status=6,
+                                offset=random.randint(0, 900),
+                                age_from=self.target_age[0],
+                                age_to=self.target_age[1],
+                                has_photo=1, online=1))
         else:
-            self.search_req = self.vk.users.search(count=100,
-                                                   fields="""
-                            photo_id, verified, sex, bdate, city, 
-                            country, photo_max_orig, has_mobile, 
-                            relation, interests, music, movies, 
-                            books, games""",
-                            sex=self.target_sex, status=6,
-                            offset=random.randint(0, 900),
-                            age_from=self.target_age[0],
-                            age_to=self.target_age[1], has_photo=1)
+            self.search_req = (self.vk.users.search
+                               (count=100, fields=self.search_fields,
+                                sex=self.target_sex, status=6,
+                                offset=random.randint(0, 900),
+                                age_from=self.target_age[0],
+                                age_to=self.target_age[1],
+                                has_photo=1, online=1))
 
         return self.search_req
 
@@ -211,83 +209,100 @@ class Vkinder:
 
         self.search_req = self.make_search_request(subject_id)
         self.tuples_list = []
+
         for person in self.search_req['items']:
-            print(
-                f'\rОбработка информации: {self.search_req["items"].index(person) + 1} '
-                f'группа из {len(self.search_req["items"])}', end="", flush=True)
+            print(f'\rОбработка информации: '
+                  f'{self.search_req["items"].index(person) + 1} '
+                  f'контакт из {len(self.search_req["items"])}',
+                  end="", flush=True)
             try:
                 if person.get('books'):
-                    self.person_books = set(person['books'].split(', '))
-                    self.target_books = set(self.subj_info_dict['books'])
-                    self.books_rating = len(set.intersection(self.person_books, self.target_books))
+                    for item in self.subj_info_dict['books']:
+                        self.books_regex = f'{item}'
+                        self.books_matches = re.findall(
+                            self.books_regex, person['books'],
+                            flags=re.I)
+                        self.books_rating = len(self.books_matches)
                 else:
                     self.books_rating = 0
-
                 if person.get('movies'):
-                    self.person_movies = set(person['movies'].split(', '))
-                    self.target_movies = set(self.subj_info_dict['movies'])
-                    self.movies_rating = len(
-                        set.intersection(self.person_movies,
-                                         self.target_movies))
+                    for item in self.subj_info_dict['movies']:
+                        self.movies_regex = f'{item}'
+                        self.movies_matches = re.findall(
+                            self.movies_regex, person['movies'],
+                            flags=re.I)
+                        self.movies_rating = len(self.movies_matches)
                 else:
                     self.movies_rating = 0
-
                 if person.get('music'):
-                    self.person_music = set(person['music'].split(', '))
-                    self.target_music = set(self.subj_info_dict['music'])
-                    self.music_rating = len(
-                        set.intersection(self.person_music,
-                                         self.target_music))
+                    for item in self.subj_info_dict['music']:
+                        self.music_regex = f'{item}'
+                        self.music_matches = re.findall(
+                            self.music_regex, person['music'],
+                            flags=re.I)
+                        self.music_rating = len(self.music_matches)
                 else:
                     self.music_rating = 0
-
                 if person.get('games'):
-                    self.person_games = set(person['games'].split(', '))
-                    self.target_games = set(self.subj_info_dict['games'])
-                    self.games_rating = len(
-                        set.intersection(self.person_games,
-                                         self.target_games))
+                    for item in self.subj_info_dict['games']:
+                        self.games_regex = f'{item}'
+                        self.games_matches = re.findall(
+                            self.games_regex, person['games'],
+                            flags=re.I)
+                        self.games_rating = len(self.games_matches)
                 else:
                     self.games_rating = 0
-
                 if person.get('interests'):
-                    self.person_interests = set(person['interests'].split(', '))
-                    self.target_interests = set(self.subj_info_dict['interests'])
-                    self.interests_rating = len(
-                        set.intersection(self.person_interests,
-                                         self.target_interests))
+                    for item in self.subj_info_dict['interests']:
+                        self.interests_regex = f'{item}'
+                        self.interests_matches = re.findall(
+                            self.interests_regex,
+                            person['interests'], flags=re.I)
+                        self.interests_rating = len(
+                            self.interests_matches)
                 else:
                     self.interests_rating = 0
+                if person.get('city'):
+                    if person['city']['title'] == \
+                        self.subj_info_dict['city']:
+                        self.city_rating = 1
+                else:
+                    self.city_rating = 0
 
                 self.person_friends = set(self.vk.friends.get(
                     user_id=person['id']))
-                self.target_friends = set(self.subj_info_dict['friends'])
+                self.target_friends = set(
+                    self.subj_info_dict['friends'])
                 self.friends_rating = len(set.intersection(
                     self.person_friends, self.target_friends))
 
-
                 self.person_groups = set(self.vk.groups.get(
                     user_id=person['id']))
-                self.target_groups = set(self.subj_info_dict['groups'])
+                self.target_groups = set(
+                    self.subj_info_dict['groups'])
                 self.groups_rating = len(set.intersection(
                     self.person_groups, self.target_groups))
 
                 self.formula = ((self.friends_rating * 3)
                                 + (self.interests_rating * 3)
+                                + (self.city_rating * 2)
                                 + self.groups_rating
                                 + self.books_rating
                                 + (self.movies_rating * 2)
                                 + (self.music_rating * 2)
                                 + self.games_rating)
+
                 self.tuples_list.append((person['id'], self.formula))
 
             except vk_api.exceptions.ApiError:
                 pass
 
-        print('\n')
-        self.t_df = pd.DataFrame(self.tuples_list, columns=['id', 'score'])
-        self.res_list = self.t_df.sort_values('score', ascending=False).head(10)['id'].tolist()
-        print('\n')
+        self.t_df = pd.DataFrame(self.tuples_list,
+                                 columns=['id', 'score'])
+        self.res_list = (self.t_df.sort_values
+                         ('score', ascending=False)
+                         .head(10)['id'].tolist())
+
         return self.res_list
 
     def json_output(self, subject_id=None):
@@ -323,48 +338,44 @@ class Vkinder:
                 'profile_link'] = r'https://vk.com/id' + str(person)
             self.ph_d = pd.DataFrame.from_records(
                 self.output_dict[person])
-            self.person_photos = self.ph_d.sort_values('likes',
-                                                       ascending=False).head(
-                3).to_dict('r')
+            self.person_photos = (self.ph_d.sort_values
+                                  ('likes', ascending=False)
+                                  .head(3).to_dict('r'))
             for count, item in enumerate(self.person_photos):
                 self.dict_to_json[person][
                     'Photo0{}'.format(count + 1)] = item['url']
+        JSONEncoder().encode(self.dict_to_json)
+
+        print('dict_to_json')
+        print(self.dict_to_json)
+        print('\n')
+
         return self.dict_to_json
 
-    def json_to_file(self, json_dict=None, file_name=None,
-                     subject_id=None):
-
-        if subject_id == None:
+    def find_a_match(self, subject_id=None, json_dict=None,
+                     file_name=None, db_name=None, to_file=True):
+        if not subject_id:
             subject_id = self.id
-
         if not json_dict:
             json_dict = self.json_output()
         if not file_name:
             file_name = f'Vkinder_output_{subject_id}.json'
-
-        with open(file_name, 'w', encoding='utf8') as vkinder_json:
-            data = json_dict
-            json.dump(data, vkinder_json, ensure_ascii=False,
-                      indent=2)
-
-    def json_to_db(self, json_dict=None, db_name=None):
-        if not json_dict:
-            json_dict = self.json_output()
         if not db_name:
             db_name = vkinder_db.output_data_collection
-        self.json_output_ins = db_name.insert_one(json_dict)
-        return self.json_output_ins.inserted_id
 
-    def find_a_match(self, subject_id=None, to_file=True):
-        if subject_id == None:
-            subject_id = self.id
         self.dict_to_json = self.json_output(subject_id)
-        if to_file is True:
-            self.json_to_db(json_dict=self.dict_to_json)
-            self.json_to_file(json_dict=self.dict_to_json)
-        else:
-            self.json_to_db(json_dict=self.dict_to_json)
 
+        if to_file is True:
+            with open(file_name, 'w',
+                      encoding='utf8') as vkinder_json:
+                data = json_dict
+                json.dump(data, vkinder_json, ensure_ascii=False,
+                          indent=2)
+            print('\nFile output is finished')
+
+        self.json_output_ins = db_name.insert_one(json_dict)
+        print('\nDB output is finished')
+        return self.json_output_ins.inserted_id
 
 
 if __name__ == '__main__':
@@ -375,6 +386,5 @@ if __name__ == '__main__':
     vk_pass = 'Vk password'
 
     av = Vkinder(vk_phone, vk_pass)
-
     info = av.find_a_match()
     pprint(info)
