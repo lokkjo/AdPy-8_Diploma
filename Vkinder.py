@@ -1,7 +1,6 @@
 import vk_api
 import json
 import random
-import time
 import pandas as pd
 from pymongo import MongoClient
 import Vkinder_inner as inner
@@ -34,6 +33,13 @@ class Vkinder:
         self.user = self.vk.users.get()
         self.id = self.user[0]['id']
         self.vk_tools = vk_api.VkTools(self.vk_session)
+
+        # Объявляем ключевые переменные для класса
+        self.subj_info_dict = {}
+        self.search_req = {}
+        self.res_list = []
+        self.dict_to_json = {}
+
         print(f'\nПривет, {self.user[0]["first_name"]}')
 
     def get_subject_info(self, subject_id=None):
@@ -55,12 +61,10 @@ class Vkinder:
         self.subj_info_dict = inner.build_subject_info(
             source_dict=self.subject_id_info)
 
-        time.sleep(0.5)
         self.subj_friends = (self.vk.friends.
                     get(user_id=self.subj_info_dict['id'])['items'])
         self.subj_info_dict['friends'] = self.subj_friends
 
-        time.sleep(0.5)
         self.subj_groups = (self.vk.groups.
                     get(user_id=self.subj_info_dict['id'])['items'])
         self.subj_info_dict['groups'] = self.subj_groups
@@ -71,7 +75,8 @@ class Vkinder:
 
         if subject_id is None:
             subject_id = self.id
-        self.subj_info_dict = self.get_subject_info(subject_id)
+
+        self.get_subject_info(subject_id)
 
         self.target_sex = inner.target_vk_sex(self.subj_info_dict['sex'])
 
@@ -95,7 +100,6 @@ class Vkinder:
         if self.subj_info_dict['city_id']:
             self.search_params['city'] = self.subj_info_dict['city_id']
 
-        time.sleep(0.5)
         self.search_req = (self.vk_tools.get_all
                            ('users.search',max_count=1000,
                             values=self.search_params))
@@ -106,7 +110,8 @@ class Vkinder:
         if subject_id == None:
             subject_id = self.id
 
-        self.search_req = self.make_search_request(subject_id)
+
+        self.make_search_request(subject_id)
         self.tuples_list = []
 
         for person in self.search_req['items']:
@@ -163,29 +168,29 @@ class Vkinder:
 
         self.t_df = pd.DataFrame(self.tuples_list,
                                  columns=['id', 'score'])
-        self.res_list = (self.t_df.sort_values
+        self.res_list += (self.t_df.sort_values
                          ('score', ascending=False)
                          .head(10)['id'].tolist())
 
         return self.res_list
 
     def json_output(self, subject_id=None):
-
         if subject_id == None:
             subject_id = self.id
-        self.res_list = self.search_request_processing(subject_id)
+
+        self.search_request_processing(subject_id) # Бывшая 176
 
         for user_id in self.res_list:
-            time.sleep(0.5)
             self.photo_req = self.vk.photos.get(owner_id=user_id,
                                                 album_id='profile',
                                                 rev=1, extended=1,
                                                 photo_sizes=0)
-
-        self.dict_to_json = inner.build_json(self.res_list,
+        self.res_dict = inner.build_json(self.res_list,
                                              self.photo_req['items'])
+        self.dict_to_json.update(self.res_dict)
 
         JSONEncoder().encode(self.dict_to_json)
+
         return self.dict_to_json
 
     def find_a_match(self, subject_id=None, json_dict=None,
@@ -193,8 +198,11 @@ class Vkinder:
         if not subject_id:
             subject_id = self.id
         self.subject_id = subject_id
+
+        self.json_output(self.subject_id)
+
         if not json_dict:
-            json_dict = self.json_output()
+            json_dict = self.dict_to_json
         self.json_dict = json_dict
         if not file_name:
             file_name = f'Vkinder_output_{self.subject_id}.json'
@@ -202,9 +210,6 @@ class Vkinder:
         if not db_name:
             db_name = vkinder_db.output_data_collection
         self.db_coll_name = db_name
-
-
-        self.dict_to_json = self.json_output(self.subject_id)
 
         if to_file is True:
             with open(self.file_name, 'w',
@@ -216,6 +221,7 @@ class Vkinder:
 
         self.json_output_ins = self.db_coll_name.insert_one(self.json_dict)
         print('\nDB output is finished')
+
         return self.json_output_ins.inserted_id
 
 
